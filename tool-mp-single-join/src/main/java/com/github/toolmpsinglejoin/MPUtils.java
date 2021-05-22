@@ -1,6 +1,7 @@
 package com.github.toolmpsinglejoin;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.baomidou.mybatisplus.core.toolkit.StringUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.springframework.beans.BeansException;
@@ -10,6 +11,7 @@ import org.springframework.context.ApplicationContextAware;
 import org.springframework.context.ApplicationListener;
 import org.springframework.core.ResolvableType;
 
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Type;
 import java.util.Collections;
 import java.util.Map;
@@ -41,5 +43,36 @@ public class MPUtils implements ApplicationListener<ApplicationStartedEvent>, Ap
 
     public static Map<Type, BaseMapper> getModelMapperCache() {
         return Collections.unmodifiableMap(MODEL_MAPPER_CACHE);
+    }
+
+    public static Object getValue(Object object, String fieldName) {
+        String setMethodName = StringUtils.concatCapitalize("get", fieldName);
+
+        try {
+            return object.getClass().getMethod(setMethodName).invoke(object);
+        } catch (IllegalAccessException e) {
+            e.printStackTrace();
+        } catch (InvocationTargetException e) {
+            e.printStackTrace();
+        } catch (NoSuchMethodException e) {
+            log.error("[{}] 属性缺少get方法", fieldName);
+        }
+        return null;
+    }
+
+    public static void setValue(Object object, String fieldName, Object value) {
+        if (value == null) {
+            return;
+        }
+        String setMethodName = StringUtils.concatCapitalize("set", fieldName);
+        try {
+            object.getClass().getMethod(setMethodName, value.getClass()).invoke(object, value);
+        } catch (IllegalAccessException e) {
+            e.printStackTrace();
+        } catch (InvocationTargetException e) {
+            e.printStackTrace();
+        } catch (NoSuchMethodException e) {
+            log.error("[{}] 属性缺少set方法", fieldName);
+        }
     }
 }

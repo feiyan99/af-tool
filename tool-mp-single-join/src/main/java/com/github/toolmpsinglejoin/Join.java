@@ -26,14 +26,4 @@ public @interface Join {
 
     String group() default "default";
 
-    SourceType sourceType() default SourceType.DB;
-
-    /**
-     * 来源类型
-     */
-    enum SourceType {
-        DB, OBJECT
-    }
-
-
 }

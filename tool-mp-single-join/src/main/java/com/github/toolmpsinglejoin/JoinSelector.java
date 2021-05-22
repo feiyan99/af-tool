@@ -11,7 +11,6 @@ import lombok.extern.slf4j.Slf4j;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationHandler;
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -50,11 +49,11 @@ public class JoinSelector {
         Map<String, List<Field_Annotation>> fieldName_fieldAnnotation = joinSelectorSet.stream().collect(Collectors.groupingBy(annotation -> annotation.fieldName));    //  所有的字段
 
 
-        /**
+        /*
          * 字段与 对应的 value list 的映射关系
          */
         Map<String, Set<Object>> fieldValueMap = new HashMap<>();
-        /**
+        /*
          * 关联值和对应对象的映射关系 key: oneq_value value: obj
          */
         Map<String, List<Object>> valueObjMap = new HashMap<>();
@@ -62,19 +61,17 @@ public class JoinSelector {
 
         fieldName_fieldAnnotation.forEach((fieldName, field_AnnotationList) -> {
             Set<Object> value = Stream.of(objects).map(object -> {
-                try {
-                    Object fieldVal = getValue(object, fieldName);
+                Object fieldVal = MPUtils.getValue(object, fieldName);
 
-                    field_AnnotationList.forEach(field_annotation -> {
+                field_AnnotationList.forEach(field_annotation -> {
+                    if (Objects.nonNull(fieldVal)) {
                         String key = ((Join) field_annotation.annotation).relationProp() + "_" + fieldVal;
                         valueObjMap.computeIfAbsent(key, k -> new ArrayList<>()).add(object);
-                    });
-                    return fieldVal;
-                } catch (IllegalArgumentException e) {
-                    e.printStackTrace();
-                }
-                return null;
-            }).collect(Collectors.toSet());
+                    }
+                });
+                return fieldVal;
+            }).filter(Objects::nonNull)
+                .collect(Collectors.toSet());
 
             fieldValueMap.put(fieldName, value);
         });
@@ -85,6 +82,10 @@ public class JoinSelector {
             Join join = (Join) fieldAnnotation.annotation;
             String joinFieldName = fieldAnnotation.fieldName;
             Set<Object> propValues = fieldValueMap.get(joinFieldName);
+            // 如果为空,说明属性之间有依赖关系,需要重新初始化一次
+            if (propValues.isEmpty()) {
+                propValues = reInit(fieldName_fieldAnnotation, fieldValueMap, valueObjMap, joinFieldName, objects);
+            }
 
             BaseMapper<?> baseMapper = MPUtils.getModelMapperCache().get(join.source());
             QueryWrapper queryWrapper = Wrappers.query();
@@ -104,17 +105,17 @@ public class JoinSelector {
             log.debug("关联查询 [{}] 完成. 准备赋值...", join.source().getSimpleName());
 
             for (Object model : res) {
-                Object joinVal = getValue(model, join.relationProp());
+                Object joinVal = MPUtils.getValue(model, join.relationProp());
 
                 for (Field_Annotation field_annotation : select_prop) {
                     Prop prop = (Prop) field_annotation.annotation;
 
-                    Object propVal = getValue(model, prop.sourcePropName());
+                    Object propVal = MPUtils.getValue(model, prop.sourcePropName());
 
                     if (Objects.isNull(propVal)) {
                         continue;
                     }
-                    valueObjMap.get(join.relationProp() + "_" + joinVal).forEach(object ->  setValue(object, field_annotation.fieldName, propVal));
+                    valueObjMap.get(join.relationProp() + "_" + joinVal).forEach(object -> MPUtils.setValue(object, field_annotation.fieldName, propVal));
                 }
             }
             log.debug("赋值完毕...");
@@ -123,37 +124,23 @@ public class JoinSelector {
     }
 
 
-    public static Object getValue(Object object, String fieldName) {
-        String setMethodName = StringUtils.concatCapitalize("get", fieldName);
+    private static Set<Object> reInit(Map<String, List<Field_Annotation>> fieldName_fieldAnnotation, Map<String, Set<Object>> fieldValueMap, Map<String, List<Object>> valueObjMap, String joinFieldName, Object[] objects) {
+        Set<Object> propValues;
+        propValues = Stream.of(objects).map(o -> MPUtils.getValue(o, joinFieldName)).collect(Collectors.toSet());
+        fieldValueMap.put(joinFieldName, propValues);
 
-        try {
-            return object.getClass().getMethod(setMethodName).invoke(object);
-        } catch (IllegalAccessException e) {
-            e.printStackTrace();
-        } catch (InvocationTargetException e) {
-            e.printStackTrace();
-        } catch (NoSuchMethodException e) {
-            log.error("[{}] 属性缺少get方法", fieldName);
+        for (Object object : objects) {
+            Object fieldVal = MPUtils.getValue(object, joinFieldName);
+
+            fieldName_fieldAnnotation.get(joinFieldName).forEach(field_annotation -> {
+                if (Objects.nonNull(fieldVal)) {
+                    String key = ((Join) field_annotation.annotation).relationProp() + "_" + fieldVal;
+                    valueObjMap.computeIfAbsent(key, k -> new ArrayList<>()).add(object);
+                }
+            });
         }
-        return null;
+        return propValues;
     }
-
-    public static void setValue(Object object, String fieldName, Object value) {
-        if (value == null) {
-            return;
-        }
-        String setMethodName = StringUtils.concatCapitalize("set", fieldName);
-        try {
-            object.getClass().getMethod(setMethodName, value.getClass()).invoke(object, value);
-        } catch (IllegalAccessException e) {
-            e.printStackTrace();
-        } catch (InvocationTargetException e) {
-            e.printStackTrace();
-        } catch (NoSuchMethodException e) {
-            log.error("[{}] 属性缺少set方法", fieldName);
-        }
-    }
-
 
     /**
      * 缓存需要查询的字段(有相关注解的字段)
@@ -168,19 +155,18 @@ public class JoinSelector {
                 for (int i = 0; i < joins.length; i++) {
                     joinSelectors.add(new Field_Annotation(field.getName(), joins[i]));
                 }
-            } else {
+            }
 
-                Prop prop = field.getDeclaredAnnotation(Prop.class);
-                if (prop != null) {
-                    if (prop.sourcePropName().trim().isEmpty()) {
-                        editAnnotationValue(prop, "sourcePropName", field.getName());
-                    }
+            Prop prop = field.getDeclaredAnnotation(Prop.class);
+            if (prop != null) {
+                if (prop.sourcePropName().trim().isEmpty()) {
+                    editAnnotationValue(prop, "sourcePropName", field.getName());
+                }
 
-                    if (selectPropGroup.containsKey(prop.group())) {
-                        selectPropGroup.get(prop.group()).add(new Field_Annotation(field.getName(), prop));
-                    } else {
-                        selectPropGroup.put(prop.group(), Stream.of(new Field_Annotation(field.getName(), prop)).collect(Collectors.toList()));
-                    }
+                if (selectPropGroup.containsKey(prop.group())) {
+                    selectPropGroup.get(prop.group()).add(new Field_Annotation(field.getName(), prop));
+                } else {
+                    selectPropGroup.put(prop.group(), Stream.of(new Field_Annotation(field.getName(), prop)).collect(Collectors.toList()));
                 }
             }
         }
@@ -200,6 +186,7 @@ public class JoinSelector {
         String fieldName;
         String sourceFieldName;
         Annotation annotation;
+
         public Field_Annotation(String fieldName, Annotation annotation) {
             this.fieldName = fieldName;
             this.annotation = annotation;
